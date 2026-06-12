@@ -2,6 +2,11 @@ import pandas as pd
 import json
 from django.http import HttpResponse, JsonResponse
 from django.contrib.auth import authenticate , login, logout
+from django.contrib.auth.models import User
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
+from django.utils.encoding import force_bytes, force_str
+from django.core.mail import send_mail
 from django.core.cache import cache
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -12,7 +17,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated, IsAuthenticate
 from rest_framework.filters import SearchFilter , OrderingFilter
 from django_filters.rest_framework import DjangoFilterBackend
 from .serializers import RegisterSerializer, LocationSerializer, ReviewSerializer
-from .models import Location, Review, Subscription
+from .models import Location, Review, Subscription, Like
 from .permissions import IsOwnerOrReadOnly, IsReviewOwnerOrReadOnly
 
 # Create your views here.
@@ -159,3 +164,65 @@ class SubscribeLocationView(APIView):
             subscription.delete()
             return Response({"detail" : "Successful unsubscribed"}, status=status.HTTP_200_OK)
         return Response({"detail" : f"Successful subscribed to '{location.name}'."}, status=status.HTTP_201_CREATED)
+
+class LikeReviewView(APIView):
+    def post(self, request, location_id, review_id):
+        location = get_object_or_404(Location, pk=location_id)
+        review = get_object_or_404(Review, pk=review_id)
+        user = request.user
+        like = Like.objects.filter(user = user, review=review).first()
+        if like:
+            if like.is_like == True:
+                like.is_like = False
+                like.save()
+            else:
+                like.is_like = True
+                like.save()
+            return Response({"detail" : "Successful change like"} , status=status.HTTP_200_OK)
+        else:
+            Like.objects.create(user=user, review=review, is_like = True)
+            return Response({"detail" : "Successful liked"}, status=status.HTTP_200_OK)
+
+
+class PasswordResetRequestView(APIView):
+    permission_classes= [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        email = request.data.get('email')
+        user = User.objects.filter(email=email).first()
+
+        if user:
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            token = default_token_generator.make_token(user)
+
+            reset_url=f"http://localhost:8000/api/auth/password-reset/confirm/{uid}/{token}/"
+
+            send_mail(
+                "Password reset",
+                f"To reset password follow the url {reset_url}",
+                "noreply@yourdomain.com",
+                [user.email],
+                fail_silently=False,
+            )
+
+        return Response({"detail" : 'The link send'}, status=status.HTTP_200_OK)
+
+class PasswordResetConfirmView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, uidb64, token):
+        new_password = request.data.get("new_password")
+
+        try:
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            user = User.objects.get(pk=uid)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            user = None
+
+        if user and default_token_generator.check_token(user, token):
+            user.set_password(new_password)
+            user.save()
+            return Response({"detail":"Password was successful changed"}, status=status.HTTP_200_OK)
+        return Response({"error":"Not valid token or uid"}, status=status.HTTP_400_BAD_REQUEST)
