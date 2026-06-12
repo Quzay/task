@@ -117,7 +117,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Europe/Kyiv'
 
 USE_I18N = True
 
@@ -134,3 +134,6 @@ REST_FRAMEWORK = {
     'DEFAULT_FILTER_BACKENDS' : ["django_filters.rest_framework.DjangoFilterBackend"],
     'DEFAULT_PERMISSION_CLASSES' : ["rest_framework.permissions.AllowAny"]
 }
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+DEFAULT_FROM_EMAIL = 'no-reply@mylocations.com'

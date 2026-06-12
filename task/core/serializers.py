@@ -25,12 +25,11 @@ class RegisterSerializer(serializers.ModelSerializer):
         return user
     
 class LocationSerializer(serializers.ModelSerializer):
-    rating = serializers.FloatField(read_only = True)
-    
     class Meta:
         model = Location
-        fields = ["name", "description" , "latitude" , "longitude" , "rating" , "category"]
-    
+        fields = ["name", "description" , "latitude" , "longitude" , "rating" , "category", "owner"]
+        read_only_fields = ["rating" , "owner"]
+
     def validate_name(self, name):
         qs = Location.objects.filter(name=name)
         if self.instance:
@@ -50,12 +49,10 @@ class LocationSerializer(serializers.ModelSerializer):
         return value
     
 class ReviewSerializer(serializers.ModelSerializer):
-    user = serializers.PrimaryKeyRelatedField(read_only = True)
-    location = serializers.PrimaryKeyRelatedField(read_only=True)
-
     class Meta:
         model=Review
-        fields=["text", "value", "user", "location"]
+        fields=["text", "value", "user", "location", "created_at"]
+        read_only_fields = ["user", "location"]
 
     def validate_value(self, value):
         if not 1 <= value <=5:

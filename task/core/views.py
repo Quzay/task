@@ -1,11 +1,18 @@
+import pandas as pd
+import json
+from django.http import HttpResponse, JsonResponse
 from django.contrib.auth import authenticate , login, logout
+from django.core.cache import cache
+from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated, IsAuthenticatedOrReadOnly
+from rest_framework.filters import SearchFilter , OrderingFilter
+from django_filters.rest_framework import DjangoFilterBackend
 from .serializers import RegisterSerializer, LocationSerializer, ReviewSerializer
-from .models import Location, Review
+from .models import Location, Review, Subscription
 from .permissions import IsOwnerOrReadOnly, IsReviewOwnerOrReadOnly
 
 # Create your views here.
@@ -51,9 +58,52 @@ class LocationViewSet(ModelViewSet):
     serializer_class = LocationSerializer
     permission_classes = [IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
 
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ["category" , "rating"]
+    search_fields = ["name" , "description"]
+    ordering_fields = ["rating" , "name"]
+    ordering = ["id"]
+    
+    CACHE_KEY_LIST='locations_list'
+
+    def get_cache_key_detail(self, pk):
+        return f'locations_detail_{pk}'
+
+    def clear_locations_cache(self, pk=None):
+        cache.delete(self.CACHE_KEY_LIST)
+        if pk:
+            cache.delete(self.get_cache_key_detail(pk))
+
+    def list(self, request, *args, **kwargs):
+        cached_data = cache.get(self.CACHE_KEY_LIST)
+        if cached_data is not None:
+            return Response(cached_data)
+        response = super().list(request, *args, **kwargs)
+        cache.set(self.CACHE_KEY_LIST, response.data, timeout=900)
+        return response
+    
+    def retrieve(self, request, *args, **kwargs):
+        pk = kwargs.get("pk")
+        cache_key = self.get_cache_key_detail(pk)
+        cached_data = cache.get(cache_key)
+        if cached_data is not None:
+            return Response(cached_data)
+        response = super().retrieve(request, *args, **kwargs)
+        cache.set(cache_key, response.data, timeout=900)
+        return response
+
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
-    
+        self.clear_locations_cache()
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        self.clear_locations_cache(pk=instance.pk)
+
+    def perform_destroy(self, instance):
+        pk = instance.pk
+        super().perform_destroy(instance)
+        self.clear_locations_cache(pk=pk)
 
 class ReviewViewSet(ModelViewSet):
     queryset=Review.objects.all()
@@ -69,3 +119,43 @@ class ReviewViewSet(ModelViewSet):
         if location_id:
             return Review.objects.filter(location_id=location_id)
         return Review.objects.all()
+
+class ExportLocationView(APIView):
+    format_kwarg = None
+    def get(self, request):
+        export_format = request.query_params.get('export_format', 'json').lower()
+        locations_queryset = Location.objects.values("id", "name", "description", "latitude", "longitude", "rating", "category__name" , "owner__username")
+
+        if not locations_queryset:
+            return JsonResponse({"detail" : "No data to export"}, status=400)
+        
+        df = pd.DataFrame(list(locations_queryset))
+
+        df.rename(columns={
+            "category__name" : "category",
+            "owner__username" : "owner"
+        }, inplace=True)
+
+        if export_format == 'csv' :
+            response = HttpResponse(content_type = "text/csv")
+            response["Content-Disposition"] = 'attachment; filename="locations.csv"'
+            df.to_csv(path_or_buf=response, index=False, encoding="utf-8")
+            return response
+        else:
+            df[["latitude", "longitude"]] = df[["latitude", "longitude"]].astype(float) 
+            data = df.to_dict(orient="records")
+            response = HttpResponse(content_type = "application/json")
+            response["Content-Disposition"] = 'attachment; filename="locations.json"'
+            response.write(json.dumps(data, ensure_ascii=False, indent=4))
+            return response
+        
+class SubscribeLocationView(APIView):
+    permission_classes = [IsAuthenticated]
+    def post(self, request, location_id):
+        location = get_object_or_404(Location, id=location_id)
+        user = request.user
+        subscription, created = Subscription.objects.get_or_create(user = user , location = location)
+        if not created:
+            subscription.delete()
+            return Response({"detail" : "Successful unsubscribed"}, status=status.HTTP_200_OK)
+        return Response({"detail" : f"Successful subscribed to '{location.name}'."}, status=status.HTTP_201_CREATED)
